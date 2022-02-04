@@ -1,0 +1,335 @@
+---
+title: "CyanoMetDB"
+author: "JamesYoung"
+date: "1/28/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+```{r}
+library(readr)
+library(tidyverse)
+
+
+df2 <-read.csv("Met.csv")
+
+df3 <- df2 %>% filter(Fix == 0 | Fix == 1)
+df4 <- semi_join(df2, df3, by = "Strain") %>% filter(Strain != "n.a.")
+library(splitstackshape)
+x <- read_csv("CyanoMetDB.csv")
+x <- cSplit(x, "Strain", sep = ";", direction = "long")
+x <- cSplit(x, "Strain", sep = ",", direction = "long")
+
+x2 <- semi_join(x, df4, by = "Strain")
+
+
+df4 <- df4 %>% select(Strain, Fix)
+x2 <- left_join(x2, df4)
+
+
+x3 <- x2 %>% distinct(CompoundName, .keep_all = T)
+x3 <- x3 %>% select(CompoundName, Fix, SMILES)
+colnames(x3) <- c("name", "FIX", "smiles")
+mean(x3$FIX)
+
+x3[is.na(x3)] <- 0
+
+
+```
+
+
+```{r}
+
+
+library("ChemmineR")
+library("ChemmineOB")
+x3 <- x2 %>% distinct(Strain, CompoundName, .keep_all = T) %>% arrange(desc(Fix))
+
+## Structure similarity searching and clustering using atom pairs
+sdfset <- smiles2sdf(x3$SMILES[1:174])
+apset <- sdf2ap(sdfset) # Generate atom pair descriptor database for searching
+sdfset2 <- smiles2sdf(x3$SMILES[1:20])
+plot(sdfset2[7:9])
+
+
+results <- NULL
+for (i in 1:nrow(x3)) {
+result <- cmp.search(apset, apset[i], type=3, cutoff = 0.01) # Search apset database with single compound.
+
+pred <- cbind(x3$Fix[result$index[2]], x3$Fix[i],result$scores[2])
+#pred <- cbind(result$scores[2], x3$Fix[i])
+results <- rbind(results, pred)
+}
+
+results[is.na(results)] <- 0
+
+mean(ifelse(results[,1] == results[,2],1,0))
+mean(ifelse(0 == results[,2],1,0))
+mean(results[,2])
+
+draw_confusion_matrix <- function(cm) {
+
+  layout(matrix(c(1,1,2)))
+  par(mar=c(2,2,2,2))
+  plot(c(100, 345), c(300, 450), type = "n", xlab="", ylab="", xaxt='n', yaxt='n')
+  title('CONFUSION MATRIX', cex.main=2)
+
+  # create the matrix 
+  rect(150, 430, 240, 370, col='#3F97D0')
+  text(195, 435, 'Non-Diazotrophic', cex=1.2)
+  rect(250, 430, 340, 370, col='#F7AD50')
+  text(295, 435, 'Diazotrophic', cex=1.2)
+  text(125, 370, 'Predicted', cex=1.3, srt=90, font=2)
+  text(245, 450, 'Actual', cex=1.3, font=2)
+  rect(150, 305, 240, 365, col='#F7AD50')
+  rect(250, 305, 340, 365, col='#3F97D0')
+  text(140, 400, 'Non-Diazotrophic', cex=1.2, srt=90)
+  text(140, 335, 'Diazotrophic', cex=1.2, srt=90)
+
+  # add in the cm results 
+  res <- as.numeric(cm$table)
+  text(195, 400, res[1], cex=1.6, font=2, col='white')
+  text(195, 335, res[2], cex=1.6, font=2, col='white')
+  text(295, 400, res[3], cex=1.6, font=2, col='white')
+  text(295, 335, res[4], cex=1.6, font=2, col='white')
+
+  # add in the specifics 
+  plot(c(100, 0), c(100, 0), type = "n", xlab="", ylab="", main = "DETAILS", xaxt='n', yaxt='n')
+  text(10, 85, names(cm$byClass[1]), cex=1.2, font=2)
+  text(10, 70, round(as.numeric(cm$byClass[1]), 3), cex=1.2)
+  text(30, 85, names(cm$byClass[2]), cex=1.2, font=2)
+  text(30, 70, round(as.numeric(cm$byClass[2]), 3), cex=1.2)
+  text(50, 85, names(cm$byClass[5]), cex=1.2, font=2)
+  text(50, 70, round(as.numeric(cm$byClass[5]), 3), cex=1.2)
+  text(70, 85, names(cm$byClass[6]), cex=1.2, font=2)
+  text(70, 70, round(as.numeric(cm$byClass[6]), 3), cex=1.2)
+  text(90, 85, names(cm$byClass[7]), cex=1.2, font=2)
+  text(90, 70, round(as.numeric(cm$byClass[7]), 3), cex=1.2)
+
+  # add in the accuracy information 
+  text(30, 35, names(cm$overall[1]), cex=1.5, font=2)
+  text(30, 20, round(as.numeric(cm$overall[1]), 3), cex=1.4)
+  text(70, 35, names(cm$overall[2]), cex=1.5, font=2)
+  text(70, 20, round(as.numeric(cm$overall[2]), 3), cex=1.4)
+}
+
+library(caret)
+cm <- confusionMatrix(as.factor(results[,1]), as.factor(results[,2]))
+
+
+
+pred <- ifelse(results[,1] == 1, 0.5+0.5*results[,3], 0.5-0.5*results[,3])
+z <-cbind(pred, as.numeric(as.factor(results[,2]))-1)
+z <- as.data.frame(z)
+
+library(gains)
+par(mfrow=c(1,1.5))
+par(mar=c(5, 4, 4, 6) + 0.1)
+dt2 <- gains( z$V2, z$pred, groups=20, optimal=F)
+
+plot(dt2$depth, dt2$cume.lift, type="l", ylab="Cumulative lift", xlab="Rank Buckets \n (1 = Most Likely To Be Diazotrophic)", main = "Cumulative Lift and Response")
+par(new = TRUE)
+plot(dt2$depth, dt2$cume.pct.of.total, type = "l",col="red", axes = FALSE, bty = "n", xlab = "", ylab = "")
+axis(side=4, at = pretty(range(dt2$cume.pct.of.total)))
+mtext("Cumulative Response",side=4,col="red",line=2) 
+legend("right",legend=c("Cumulative \n Lift","Cumulative \n Response"),
+       text.col=c("black","red"),pch=c(16,16), col=c("black","red"))
+lines(dt2$depth, dt2$cume.pct.of.total, type="l",col="red")
+dt2
+
+
+
+
+draw_confusion_matrix(cm)
+
+
+
+
+results2 <- cbind(results, pred)
+library(ROCR)
+unlist(slot(ROCR::performance(prediction(pred, results[,2]), "auc"), "y.values"))
+
+
+
+
+allsmiles <- read_csv("CyanoMetDB.csv") %>% distinct(SMILES, .keep_all = TRUE)
+
+
+`%!in%` <- Negate(`%in%`)
+allsmiles <- allsmiles %>% filter(SMILES %!in% x3$SMILES)
+sdfsetAll <- smiles2sdf(allsmiles$SMILES)
+apsetAll <- sdf2ap(sdfsetAll)
+
+results <- NULL
+for (i in 1:length(apsetAll)) {
+result <- cmp.search(apset, apsetAll[i], type=3, cutoff = 0.01) # Search apset database with single compound.
+
+pred <- cbind(x3$Fix[result$index[2]], allsmiles$CompoundName[i], result$scores[2])
+#pred <- cbind(result$scores[2], x3$Fix[i])
+results <- rbind(results, pred)
+}
+results[,1] <- as.numeric(results[,1])
+results[,3] <- as.numeric(results[,3])
+pred <- ifelse(as.numeric(results[,1]) == 1, 0.5+0.5*as.numeric(results[,3]), 0.5-0.5*as.numeric(results[,3]))
+hist(pred)
+
+write.csv(results, "AllUnknownPredictions2.csv")
+
+
+
+
+
+
+
+```
+
+```{r}
+df <- read_csv("AllUnknownPredictions2.csv")
+df$...1 <- NULL
+df$pred <- ifelse(df$V1 == 1, 0.5+0.5*df$V3, 0.5-0.5*df$V3)
+colnames(df)[2] <- "CompoundName"
+
+library(splitstackshape)
+
+
+
+x <- read_csv("CyanoMetDB.csv")
+x <- cSplit(x, "Strain", sep = ";", direction = "long")
+x <- cSplit(x, "Strain", sep = ",", direction = "long")
+
+
+x2 <- semi_join(x, df, by = "CompoundName")
+x2 <- left_join(x2, df, by = "CompoundName")
+
+x3 <- x2 %>% group_by(Strain) %>% summarise(max = max(pred),
+                                           min = min(pred),
+                                           mean = mean(pred, na.rm = T), 
+                                           median = median(pred, na.rm = T),
+                                           
+                                           count = n()) %>% 
+  arrange(desc(max))
+write.csv(x3, "UnlabeledStrainResults2.csv")
+
+
+df <- read_csv("AllUnknownPredictions2.csv")
+df$...1 <- NULL
+df$pred <- ifelse(df$V1 == 1, 0.5+0.5*df$V3, 0.5-0.5*df$V3)
+colnames(df)[2] <- "CompoundName"
+
+library(splitstackshape)
+
+
+
+x <- read_csv("CyanoMetDB.csv")
+
+
+
+x2 <- left_join(x, df, by = "CompoundName") %>% distinct(CompoundName, .keep_all = TRUE)
+
+x3 <- x2 %>% arrange(desc(pred)) %>% select(CompoundName, pred)
+
+write.csv(x3, "UnlabeledCompoundResults2.csv")
+
+```
+
+
+
+```{r}
+tox <- read_csv("Batch_Oral_rat_LD50_Consensus.csv")
+
+met <- read_csv("CyanoMetForMPNN.csv")
+tox$smiles <- tox$Query
+
+new <- left_join(tox, met, by = "smiles")
+new$`Pred_Nearest neighbor_-Log10(mol/L)` <- as.numeric(new$`Pred_Nearest neighbor_-Log10(mol/L)`)
+new$`Pred_Consensus_-Log10(mol/L)` <- as.numeric(new$`Pred_Consensus_-Log10(mol/L)`)
+new$`Pred_Hierarchical clustering_-Log10(mol/L)`<- as.numeric(new$`Pred_Hierarchical clustering_-Log10(mol/L)`)
+new$`Pred_Value:_mg/kg` <- as.numeric(new$`Pred_Value:_mg/kg`)
+new$`Pred_Value:_-Log10(mol/kg)` <- as.numeric(new$`Pred_Value:_-Log10(mol/kg)`)
+
+
+
+library(ggplot2)
+#install.packages("ggpubr")
+library(ggpubr)
+
+new$`Pred_Value:_-Log10(mol/kg)`
+p <- ggboxplot(new, x = "p_np", y = "Pred_Value:_-Log10(mol/kg)",
+           palette = "jco",
+          add = "jitter") + labs(x = "Diazotrophic or Not (1 = Diazotroph)", y = "Rat Oral LD50 (-Log10(mol/kg))")
+
+p <- p + stat_compare_means(method = "t.test")+ylim(0,10)
+
+
+
+tox <- read_csv("Batch_Daphnia_magna_LC50_(48_hr)_AllMethods.csv")
+
+met <- read_csv("CyanoMetForMPNN.csv")
+tox$smiles <- tox$Query
+
+new <- left_join(tox, met, by = "smiles")
+new$`Pred_Nearest neighbor_-Log10(mol/L)` <- as.numeric(new$`Pred_Nearest neighbor_-Log10(mol/L)`)
+new$`Pred_Consensus_-Log10(mol/L)` <- as.numeric(new$`Pred_Consensus_-Log10(mol/L)`)
+new$`Pred_Hierarchical clustering_-Log10(mol/L)`<- as.numeric(new$`Pred_Hierarchical clustering_-Log10(mol/L)`)
+
+
+p2 <- ggboxplot(new, x = "p_np", y = "Pred_Consensus_-Log10(mol/L)",
+           palette = "jco",
+          add = "jitter") + labs(x = "Diazotrophic or Not (1 = Diazotroph)", y = "Daphnia magna LD50 (-Log10(mol/kg))")+ylim(0,10)
+
+p2 <- p2 + stat_compare_means(method = "t.test")
+
+
+
+library(patchwork)
+p + p2
+
+
+
+
+```
+
+
+
+
+```{r}
+library(ROCR)
+
+
+p2 <-pred
+
+p2 <- as.numeric(p2)
+p3 <- pred
+
+p3 <- as.numeric(p3)
+pred1 <- prediction(p2, results[,2])
+roc.perf = ROCR::performance(pred1, measure = "tpr", x.measure = "fpr")
+pred2 <- prediction(p3, results[,2])
+roc.perf2 = ROCR::performance(pred2, measure = "tpr", x.measure = "fpr")
+plot(roc.perf,col='red', lty=1, lwd=3, main = "Structural Similarity Model")
+abline(a=0, b= 1)
+plot(roc.perf2, add=TRUE, lty=1, lwd=3)
+#roc.perf
+auctest <- ROCR::performance(pred2,"auc")
+auctrain <- ROCR::performance(pred1,"auc")
+# now converting S4 class to vector
+auctest <- unlist(slot(auctest, "y.values"))
+auctrain <- unlist(slot(auctrain, "y.values"))
+# adding min and max ROC AUC to the center of the plot
+auctest<-mean(round(auctest, digits = 3))
+auctrain<-mean(round(auctrain, digits = 3))
+minauct <- paste(c("LOOCV \nHoldouts AUC  = "), auctrain,sep="")
+maxauct <- paste(c("Test (AUC) = "),auctest,sep="")
+#legend(0.62,0.6,c(maxauct),cex=1.2,box.col = "white", text.col = "black")
+legend(0.61,0.4,c(minauct),cex=1.2,box.col = "white", text.col = "black")
+
+
+```
+
+
+
